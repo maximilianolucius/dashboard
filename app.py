@@ -4,6 +4,10 @@ import os
 from werkzeug.utils import secure_filename
 from datetime import datetime
 import json
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
 
 
 app = Flask(__name__)
@@ -15,6 +19,7 @@ UPLOAD_FOLDER = 'uploads'
 ALLOWED_EXTENSIONS = {'csv'}
 
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16 MB upload limit
 
 # Ensure the upload folder exists
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -29,7 +34,107 @@ if not os.path.isfile(RESULTS_CSV):
     df = pd.DataFrame(columns=['avg_profit', 'total_trades', 'total_profit', 'winning_trades', 'losing_trades'])
     df.to_csv(RESULTS_CSV, index=False)
 
+if not os.path.exists(app.config['UPLOAD_FOLDER']):
+    os.makedirs(app.config['UPLOAD_FOLDER'])
 
+@app.route('/manage_files', methods=['GET', 'POST'])
+def manage_files():
+    if request.method == 'POST':
+        action = request.form.get('action')
+        app.logger.info(f"Action received: {action}")
+
+        if action == 'upload':
+            # Handle file uploads
+            if 'file' not in request.files:
+                flash('No file part in the request.', 'danger')
+                return redirect(url_for('manage_files'))
+            files = request.files.getlist('file')
+            if not files or files[0].filename == '':
+                flash('No files selected for uploading.', 'warning')
+                return redirect(url_for('manage_files'))
+            for file in files:
+                if file and allowed_file(file.filename):
+                    filename = secure_filename(file.filename)
+                    file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+                    if os.path.exists(file_path):
+                        flash(f'File "{filename}" already exists.', 'warning')
+                        continue
+                    try:
+                        # Validate CSV file
+                        df = pd.read_csv(file)
+                        file.seek(0)  # Reset file pointer
+                        file.save(file_path)
+                        flash(f'File "{filename}" uploaded successfully.', 'success')
+                        app.logger.info(f'File "{filename}" uploaded successfully.')
+                    except Exception as e:
+                        flash(f'Invalid CSV file "{filename}": {e}', 'danger')
+                        app.logger.error(f'Error processing file "{filename}": {e}')
+                else:
+                    flash(f'Invalid file type for "{file.filename}". Only CSV files are allowed.', 'danger')
+            return redirect(url_for('manage_files'))
+
+        elif action == 'delete_selected':
+            # Handle deletion of selected files
+            selected_files = request.form.getlist('selected_files')
+            if not selected_files:
+                flash('No files selected for deletion.', 'warning')
+            else:
+                for filename in selected_files:
+                    file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+                    if os.path.exists(file_path):
+                        try:
+                            os.remove(file_path)
+                            flash(f'File "{filename}" deleted successfully.', 'success')
+                            app.logger.info(f'File "{filename}" deleted successfully.')
+                        except Exception as e:
+                            flash(f'Error deleting file "{filename}": {e}', 'danger')
+                            app.logger.error(f'Error deleting file "{filename}": {e}')
+                    else:
+                        flash(f'File "{filename}" does not exist.', 'warning')
+            return redirect(url_for('manage_files'))
+
+        elif action == 'delete_all':
+            # Handle deletion of all files
+            uploaded_files = [f for f in os.listdir(app.config['UPLOAD_FOLDER']) if allowed_file(f)]
+            if not uploaded_files:
+                flash('No files to delete.', 'warning')
+            else:
+                for filename in uploaded_files:
+                    file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+                    try:
+                        os.remove(file_path)
+                        app.logger.info(f'File "{filename}" deleted successfully.')
+                    except Exception as e:
+                        flash(f'Error deleting file "{filename}": {e}', 'danger')
+                        app.logger.error(f'Error deleting file "{filename}": {e}')
+                flash('All files have been deleted.', 'success')
+            return redirect(url_for('manage_files'))
+
+        else:
+            flash('Invalid action.', 'danger')
+            app.logger.error(f'Invalid action: {action}')
+            return redirect(url_for('manage_files'))
+
+    # Handle GET request: Display the manage_files page
+    uploaded_files = []
+    for filename in os.listdir(app.config['UPLOAD_FOLDER']):
+        if allowed_file(filename):
+            filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+            try:
+                df = pd.read_csv(filepath)
+                rows, columns = df.shape
+                uploaded_files.append({
+                    'name': filename,
+                    'rows': rows,
+                    'columns': columns
+                })
+                app.logger.info(f'Loaded file "{filename}" with {rows} rows and {columns} columns')
+            except Exception as e:
+                flash(f'Error processing file "{filename}": {e}', 'danger')
+                app.logger.error(f'Error processing file "{filename}": {e}')
+                continue
+
+    return render_template('manage_files.html', uploaded_files=uploaded_files)
 @app.route('/')
 def index():
     # Load existing summary data
@@ -159,10 +264,235 @@ def orders():
 
 
 # app.py
+@app.route('/mam_summary', methods=['GET', 'POST'])
+def mam_summary():
+    dates, balances, open_dates, open_orders = [], [], [], []
+
+    uploaded_files = []
+
+    selected_file = None
+    summary_table_symbol = None
+    summary_table_side = None
+    initial_balance = 100000.00  # Default initial balance
+
+    # Mapping OrderType to side
+    order_type_mapping = {
+        'Buy': 'buy',
+        'Sell': 'sell'
+    }
+
+    selected_file = 'mam-history-orders-5630165.csv'
+    initial_balance_input = request.form.get('initial_balance')
+
+    # Validate initial balance
+    # try:
+    #     initial_balance = float(initial_balance_input)
+    #     if initial_balance <= 0:
+    #         flash('Initial balance must be a number greater than 0.')
+    #         initial_balance = 100000.00  # Reset to default if invalid
+    # except (ValueError, TypeError):
+    #     flash('Invalid initial balance. Please enter a valid number greater than 0.')
+    #     initial_balance = 100000.00  # Reset to default if invalid
+
+    file_path = os.path.join(app.config['UPLOAD_FOLDER'], selected_file)
+    if os.path.exists(file_path):
+        try:
+            # df = pd.read_csv(os.path.join('./dashboard/uploads', selected_file))
+            df = pd.read_csv(file_path)
+
+            # Check required columns
+            required_columns = ['OrderTicket', 'OrderType', 'OrderStatus', 'Symbol', 'Volume', 'OpenPrice',
+                                'OpenTime', 'ClosePrice', 'CloseTime', 'Profit']
+            if not all(col in df.columns for col in required_columns):
+                flash(f'File "{selected_file}" is missing required columns.')
+                return redirect(url_for('mam_summary'))
+
+            # Handle missing Symbol entries by filling with 'Unknown'
+            df['Symbol'] = df['Symbol'].fillna('Unknown')
+
+            initial_balance = df.loc[df.OrderTypeInt==6]['Profit'].sum()
+
+            # Compute 'G/P' based on 'Profit'
+            df['G/P'] = df['Profit'].apply(lambda x: 'G' if x >= 0 else 'P')
+
+            # Map 'OrderType' to 'side'
+            df['side'] = df['OrderType'].map(order_type_mapping).fillna('Unknown')
+
+            # Convert 'OpenTime' to datetime
+            df['OpenTime'] = pd.to_datetime(df['OpenTime'], format='%Y.%m.%d %H:%M', errors='coerce')
+
+            # Convert 'CloseTime' to datetime, handling 'N/A' values
+            df['CloseTime'] = pd.to_datetime(df['CloseTime'], format='%Y.%m.%d %H:%M', errors='coerce')
+
+            # For open orders, set 'CloseTime_Adjusted' to current time
+            df['CloseTime_Adjusted'] = df['CloseTime']
+            df.loc[df['CloseTime'].isna(), 'CloseTime_Adjusted'] = pd.Timestamp.now()
+
+            # Calculate 'Duración' in minutes
+            df['Duración'] = (df['CloseTime_Adjusted'] - df['OpenTime']).dt.total_seconds() / 60
+
+            # First Summary: Group by 'Symbol' and 'G/P'
+            grouped_symbol = df.loc[(df['side'].isin(['sell', 'buy'])) & (df['OrderStatus']=='Closed')] \
+                        .groupby(['Symbol', 'G/P']).agg(
+                Count_id=('OrderTicket', 'count'),
+                Average_P_L=('Profit', 'mean'),
+                Average_Duración=('Duración', 'mean'),
+                Sum_P_L=('Profit', 'sum')
+            ).reset_index()
+
+            # Exclude rows where Symbol is 'Unknown'
+            grouped_symbol = grouped_symbol[grouped_symbol['Symbol'] != 'Unknown']
+
+            # Calculate total count per symbol for percentage calculations
+            total_counts_symbol = grouped_symbol.groupby('Symbol')['Count_id'].transform('sum')
+
+            # Calculate % Rentabilidad and %
+            grouped_symbol['% Rentabilidad'] = (grouped_symbol['Sum_P_L']) / initial_balance * 100
+            grouped_symbol['%'] = (grouped_symbol['Count_id'] / total_counts_symbol) * 100
+            grouped_symbol['Beneficio_Esperado'] = grouped_symbol['Sum_P_L']
+
+            # Replace NaN values with 0
+            grouped_symbol['% Rentabilidad'] = grouped_symbol['% Rentabilidad'].fillna(0)
+            grouped_symbol['%'] = grouped_symbol['%'].fillna(0)
+            grouped_symbol['Beneficio_Esperado'] = grouped_symbol['Beneficio_Esperado'].fillna(0)
+
+            # Round numerical values for better readability
+            grouped_symbol['Average_P_L'] = grouped_symbol['Average_P_L'].round(2)
+            grouped_symbol['Average_Duración'] = grouped_symbol['Average_Duración'].round(2)
+            grouped_symbol['Sum_P_L'] = grouped_symbol['Sum_P_L'].round(2)
+            grouped_symbol['% Rentabilidad'] = grouped_symbol['% Rentabilidad'].round(2)
+            grouped_symbol['%'] = grouped_symbol['%'].round(2)
+            grouped_symbol['Beneficio_Esperado'] = grouped_symbol['Beneficio_Esperado'].round(2)
+
+            # Prepare summary table data for Symbol
+            summary_table_symbol = grouped_symbol.to_dict(orient='records')
+
+            # Calculate total result for Symbol
+            total_count_symbol = grouped_symbol['Count_id'].sum()
+            total_sum_p_l_symbol = grouped_symbol['Sum_P_L'].sum().round(2)
+            total_beneficio_esperado_symbol = grouped_symbol['Beneficio_Esperado'].sum().round(2)
+
+            total_result_symbol = {
+                'Symbol': 'Total Result',
+                'G/P': '',
+                'Count_id': total_count_symbol,
+                'Average_P_L': '',
+                'Average_Duración': '',
+                'Sum_P_L': total_sum_p_l_symbol,
+                '% Rentabilidad': '',
+                '%': '',
+                'Beneficio_Esperado': total_beneficio_esperado_symbol
+            }
+
+            summary_table_symbol.append(total_result_symbol)
+
+            # Second Summary: Group by 'side' and 'G/P'
+            grouped_side = df.groupby(['side', 'G/P']).agg(
+                Count_id=('OrderTicket', 'count'),
+                Average_P_L=('Profit', 'mean'),
+                Average_Duración=('Duración', 'mean'),
+                Sum_P_L=('Profit', 'sum')
+            ).reset_index()
+
+            # Exclude rows where side is 'Unknown'
+            grouped_side = grouped_side[grouped_side['side'] != 'Unknown']
+
+            # Calculate total count per side for percentage calculations
+            total_counts_side = grouped_side.groupby('side')['Count_id'].transform('sum')
+
+            # Calculate % Rentabilidad and %
+            grouped_side['% Rentabilidad'] = (grouped_side['Sum_P_L']) / initial_balance * 100
+            grouped_side['%'] = (grouped_side['Count_id'] / total_counts_side) * 100
+            grouped_side['Beneficio_Esperado'] = grouped_side['Sum_P_L']
+
+            # Replace NaN values with 0
+            grouped_side['% Rentabilidad'] = grouped_side['% Rentabilidad'].fillna(0)
+            grouped_side['%'] = grouped_side['%'].fillna(0)
+            grouped_side['Beneficio_Esperado'] = grouped_side['Beneficio_Esperado'].fillna(0)
+
+            # Round numerical values for better readability
+            grouped_side['Average_P_L'] = grouped_side['Average_P_L'].round(2)
+            grouped_side['Average_Duración'] = grouped_side['Average_Duración'].round(2)
+            grouped_side['Sum_P_L'] = grouped_side['Sum_P_L'].round(2)
+            grouped_side['% Rentabilidad'] = grouped_side['% Rentabilidad'].round(2)
+            grouped_side['%'] = grouped_side['%'].round(2)
+            grouped_side['Beneficio_Esperado'] = grouped_side['Beneficio_Esperado'].round(2)
+
+            # Prepare summary table data for side
+            summary_table_side = grouped_side.to_dict(orient='records')
+
+            # Calculate total result for side
+            total_count_side = grouped_side['Count_id'].sum()
+            total_sum_p_l_side = grouped_side['Sum_P_L'].sum().round(2)
+            total_beneficio_esperado_side = grouped_side['Beneficio_Esperado'].sum().round(2)
+
+            total_result_side = {
+                'side': 'Total Result',
+                'G/P': '',
+                'Count_id': total_count_side,
+                'Average_P_L': '',
+                'Average_Duración': '',
+                'Sum_P_L': total_sum_p_l_side,
+                '% Rentabilidad': '',
+                '%': '',
+                'Beneficio_Esperado': total_beneficio_esperado_side
+            }
+
+            summary_table_side.append(total_result_side)
+
+            # Profit over time
+            df_closed = df[df['OrderStatus'] == 'Closed'].copy()
+            if not df_closed.empty:
+                df_closed_sorted = df_closed.sort_values(by='CloseTime')
+                df_closed_sorted['CloseDate'] = df_closed_sorted['CloseTime'].dt.date
+                daily_profit = df_closed_sorted.groupby('CloseDate')['Profit'].sum().reset_index()
+                daily_profit['Cumulative_Profit'] = daily_profit['Profit'].cumsum()
+                daily_profit['Balance'] = initial_balance + daily_profit['Cumulative_Profit']
+                plot_data = daily_profit[['CloseDate', 'Balance']].copy()
+                plot_data['CloseDate'] = plot_data['CloseDate'].astype(str)
+                dates = plot_data['CloseDate'].tolist()
+                balances = plot_data['Balance'].tolist()
+            else:
+                dates = []
+                balances = []
+
+            # Calculate Daily Open Orders for Bar Plot
+            df['OpenDate'] = df['OpenTime'].dt.date
+            df['CloseDate'] = df['CloseTime_Adjusted'].dt.date
+            min_date = df['OpenDate'].min()
+            max_date = df['CloseDate'].max()
+            all_dates = pd.date_range(start=min_date, end=max_date, freq='D').date
+            open_orders_daily = []
+            for current_date in all_dates:
+                open_orders_count = df[
+                    (df['OpenDate'] <= current_date) &
+                    (df['CloseDate'] >= current_date)
+                ].shape[0]
+                open_orders_daily.append({'Date': current_date.strftime('%Y-%m-%d'), 'Open_Orders': open_orders_count})
+            open_orders_daily_df = pd.DataFrame(open_orders_daily)
+            open_dates = open_orders_daily_df['Date'].tolist()
+            open_orders = open_orders_daily_df['Open_Orders'].tolist()
+
+            flash(f'File "{selected_file}" processed successfully. Initial Balance: ${initial_balance:,.2f}')
+        except Exception as e:
+            flash(f'Error processing file "{selected_file}": {e}')
+
+    return render_template('mam_summary.html',
+                           uploaded_files=uploaded_files,
+                           selected_file=selected_file,
+                           summary_table_symbol=summary_table_symbol,
+                           summary_table_side=summary_table_side,
+                           initial_balance=initial_balance,
+                           dates=json.dumps(dates),
+                           balances=json.dumps(balances),
+                           open_dates=json.dumps(open_dates),
+                           open_orders=json.dumps(open_orders)
+                       )
 
 @app.route('/summary', methods=['GET', 'POST'])
 def summary():
     dates, balances, open_dates, open_orders = [], [], [], []
+
     uploaded_files = []
     for filename in os.listdir(app.config['UPLOAD_FOLDER']):
         if allowed_file(filename):
