@@ -20,7 +20,7 @@
     <div class="container mt-4">
         <h1 class="mb-4">MaM  Summary Dashboard</h1>
 
-        <!-- Flash Messages -->
+        <!-- Flash Messages
         {% with messages = get_flashed_messages() %}
           {% if messages %}
             <div class="alert alert-info">
@@ -29,12 +29,12 @@
               {% endfor %}
             </div>
           {% endif %}
-        {% endwith %}
+        {% endwith %} -->
 
         <!-- Display Summary Table by Symbol and G/P -->
         {% if summary_table_symbol %}
             <h2>Summary by Symbol</h2>
-            <p><strong>Initial Balance:</strong> ${{ "{:,.2f}".format(initial_balance) }}</p>
+            <!-- p><strong>Initial Balance:</strong> ${{ "{:,.2f}".format(initial_balance) }}</p-->
             <table class="table table-bordered table-striped">
                 <thead>
                     <tr>
@@ -96,7 +96,7 @@
         <!-- Display Summary Table by Side and G/P -->
         {% if summary_table_side %}
             <h2 class="mt-5">Summary by Side</h2>
-            <p><strong>Initial Balance:</strong> ${{ "{:,.2f}".format(initial_balance) }}</p>
+            <!-- p><strong>Initial Balance:</strong> ${{ "{:,.2f}".format(initial_balance) }}</p -->
             <table class="table table-bordered table-striped">
                 <thead>
                     <tr>
@@ -155,13 +155,21 @@
             <p>No summary data to display for Side and G/P.</p>
         {% endif %}
 
-        <!-- Plot Section: Balance Over Time -->
+        <!-- Plot Section: % Rentabilidad Over Time -->
+        {% if dates and rentabilidades %}
+            <br>
+            <br>
+            <h2 class="mt-5">% Rentabilidad Over Time (Daily)</h2>
+            <canvas id="rentabilidadChart" width="800" height="400"></canvas>
+        {% endif %}
+
+        <!-- Plot Section: Balance Over Time >
         {% if dates and balances %}
             <br>
             <br>
-            <h2 class="mt-5">Balance Over Time (Daily)</h2>
+            <h2 class="mt-5">% Rentabilidad Over Time (Daily)</h2>
             <canvas id="balanceChart" width="800" height="400"></canvas>
-        {% endif %}
+        {% endif %} -->
 
         <!-- Plot Section: Open Orders Over Time -->
         {% if open_dates and open_orders %}
@@ -175,6 +183,91 @@
     <!-- Optional: Include Bootstrap JS for better interactivity -->
     <script src="https://code.jquery.com/jquery-3.5.1.slim.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@4.5.0/dist/js/bootstrap.bundle.min.js"></script>
+
+    {% if dates and rentabilidades %}
+    <script>
+        // Parse the JSON data passed from Flask
+        const dates = {{ dates|safe }};
+        const rentabilidades = {{ rentabilidades|safe }};
+
+        // Get the context of the canvas
+        const ctx = document.getElementById('rentabilidadChart').getContext('2d');
+
+        // Create the % Rentabilidad Chart
+        const rentabilidadChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: dates,
+                datasets: [{
+                    label: '% Rentabilidad',
+                    data: rentabilidades,
+                    borderColor: 'rgba(75, 192, 192, 1)',
+                    backgroundColor: 'rgba(75, 192, 192, 0.2)',
+                    fill: true,
+                    tension: 0.1
+                }]
+            },
+            options: {
+                responsive: true,
+                interaction: {
+                    mode: 'index',
+                    intersect: false,
+                },
+                plugins: {
+                    title: {
+                        display: true,
+                        text: '% Rentabilidad Over Time (Daily)'
+                    },
+                    tooltip: {
+                        callbacks: {
+                            label: function(context) {
+                                let label = context.dataset.label || '';
+                                if (label) {
+                                    label += ': ';
+                                }
+                                if (context.parsed.y !== null) {
+                                    label += context.parsed.y.toFixed(2) + '%';
+                                }
+                                return label;
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    x: {
+                        type: 'time',
+                        time: {
+                            unit: 'day',
+                            displayFormats: {
+                                day: 'yyyy-MM-dd'
+                            },
+                            tooltipFormat: 'yyyy-MM-dd'
+                        },
+                        title: {
+                            display: true,
+                            text: 'Date'
+                        }
+                    },
+                    y: {
+                        title: {
+                            display: true,
+                            text: '% Rentabilidad'
+                        },
+                        beginAtZero: true,
+                        ticks: {
+                            // Include a percent sign in the ticks
+                            callback: function(value, index, ticks) {
+                                return value.toFixed(2) + '%';
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    </script>
+    {% endif %}
+
+
 
     {% if dates and balances %}
     <script>

@@ -37,7 +37,7 @@ if not os.path.isfile(RESULTS_CSV):
 if not os.path.exists(app.config['UPLOAD_FOLDER']):
     os.makedirs(app.config['UPLOAD_FOLDER'])
 
-@app.route('/manage_files', methods=['GET', 'POST'])
+@app.route('/', methods=['GET', 'POST'])
 def manage_files():
     if request.method == 'POST':
         action = request.form.get('action')
@@ -135,7 +135,7 @@ def manage_files():
                 continue
 
     return render_template('manage_files.html', uploaded_files=uploaded_files)
-@app.route('/')
+@app.route('/index')
 def index():
     # Load existing summary data
     if os.path.exists(RESULTS_CSV):
@@ -311,6 +311,7 @@ def mam_summary():
             df['Symbol'] = df['Symbol'].fillna('Unknown')
 
             initial_balance = df.loc[df.OrderTypeInt==6]['Profit'].sum()
+            initial_balance = 0
 
             # Compute 'G/P' based on 'Profit'
             df['G/P'] = df['Profit'].apply(lambda x: 'G' if x >= 0 else 'P')
@@ -331,13 +332,50 @@ def mam_summary():
             # Calculate 'Duración' in minutes
             df['Duración'] = (df['CloseTime_Adjusted'] - df['OpenTime']).dt.total_seconds() / 60
 
+            # -----
+            # For balance operations (OrderTypeInt == 6)
+            df_balance_ops = df[df['OrderTypeInt'] == 6][['OpenTime', 'Profit']].copy()
+            df_balance_ops = df_balance_ops.rename(columns={'OpenTime': 'Time'})
+
+            # For closed 'sell' or 'buy' orders
+            df_closed_orders = df[
+                df['side'].isin(['sell', 'buy']) & df['CloseTime'].notnull()
+                ][['CloseTime', 'Profit']].copy()
+            df_closed_orders = df_closed_orders.rename(columns={'CloseTime': 'Time'})
+
+            # Combine both DataFrames
+            balance_changes = pd.concat([df_balance_ops, df_closed_orders], ignore_index=True)
+            # Sort by Time
+            balance_changes = balance_changes.sort_values('Time')
+            # Calculate cumulative balance
+            balance_changes['Cumulative_Balance'] = initial_balance + balance_changes['Profit'].cumsum()
+            # Sort the original DataFrame by OpenTime
+            df = df.sort_values('OpenTime')
+
+            # Merge cumulative balance
+            df = pd.merge_asof(
+                df,
+                balance_changes[['Time', 'Cumulative_Balance']],
+                left_on='OpenTime',
+                right_on='Time',
+                direction='backward'
+            )
+
+            # Handle division by zero
+            df['Rentabilidad'] = df.apply(
+                lambda row: row['Profit'] / row['Cumulative_Balance'] if row['Cumulative_Balance'] != 0 else 0,
+                axis=1
+            )
+            # -----
+
             # First Summary: Group by 'Symbol' and 'G/P'
             grouped_symbol = df.loc[(df['side'].isin(['sell', 'buy'])) & (df['OrderStatus']=='Closed')] \
                         .groupby(['Symbol', 'G/P']).agg(
                 Count_id=('OrderTicket', 'count'),
                 Average_P_L=('Profit', 'mean'),
                 Average_Duración=('Duración', 'mean'),
-                Sum_P_L=('Profit', 'sum')
+                Sum_P_L=('Profit', 'sum'),
+                Rentabilidad=('Rentabilidad', 'mean')
             ).reset_index()
 
             # Exclude rows where Symbol is 'Unknown'
@@ -347,7 +385,7 @@ def mam_summary():
             total_counts_symbol = grouped_symbol.groupby('Symbol')['Count_id'].transform('sum')
 
             # Calculate % Rentabilidad and %
-            grouped_symbol['% Rentabilidad'] = (grouped_symbol['Sum_P_L']) / initial_balance * 100
+            grouped_symbol['% Rentabilidad'] = (grouped_symbol['Rentabilidad']) * 100
             grouped_symbol['%'] = (grouped_symbol['Count_id'] / total_counts_symbol) * 100
             grouped_symbol['Beneficio_Esperado'] = grouped_symbol['Sum_P_L']
 
@@ -391,7 +429,8 @@ def mam_summary():
                 Count_id=('OrderTicket', 'count'),
                 Average_P_L=('Profit', 'mean'),
                 Average_Duración=('Duración', 'mean'),
-                Sum_P_L=('Profit', 'sum')
+                Sum_P_L=('Profit', 'sum'),
+                Rentabilidad=('Rentabilidad', 'mean')
             ).reset_index()
 
             # Exclude rows where side is 'Unknown'
@@ -401,7 +440,7 @@ def mam_summary():
             total_counts_side = grouped_side.groupby('side')['Count_id'].transform('sum')
 
             # Calculate % Rentabilidad and %
-            grouped_side['% Rentabilidad'] = (grouped_side['Sum_P_L']) / initial_balance * 100
+            grouped_side['% Rentabilidad'] = (grouped_side['Rentabilidad']) * 100
             grouped_side['%'] = (grouped_side['Count_id'] / total_counts_side) * 100
             grouped_side['Beneficio_Esperado'] = grouped_side['Sum_P_L']
 
@@ -441,20 +480,40 @@ def mam_summary():
             summary_table_side.append(total_result_side)
 
             # Profit over time
-            df_closed = df[df['OrderStatus'] == 'Closed'].copy()
-            if not df_closed.empty:
-                df_closed_sorted = df_closed.sort_values(by='CloseTime')
-                df_closed_sorted['CloseDate'] = df_closed_sorted['CloseTime'].dt.date
-                daily_profit = df_closed_sorted.groupby('CloseDate')['Profit'].sum().reset_index()
-                daily_profit['Cumulative_Profit'] = daily_profit['Profit'].cumsum()
-                daily_profit['Balance'] = initial_balance + daily_profit['Cumulative_Profit']
-                plot_data = daily_profit[['CloseDate', 'Balance']].copy()
-                plot_data['CloseDate'] = plot_data['CloseDate'].astype(str)
-                dates = plot_data['CloseDate'].tolist()
-                balances = plot_data['Balance'].tolist()
+            df['% Rentabilidad'] = (df['Rentabilidad']) * 100
+            # Calculate cumulative '% Rentabilidad' over time using 'sell' and 'buy' orders and 'OpenTime'
+            # Filter orders with side 'sell' or 'buy'
+            df_orders = df[df['side'].isin(['sell', 'buy'])].copy()
+
+            if not df_orders.empty:
+                # Extract date from OpenTime
+                df_orders['OpenDate'] = df_orders['OpenTime'].dt.date
+
+                # Group by 'OpenDate' and compute average of '% Rentabilidad'
+                daily_rentabilidad = df_orders.groupby('OpenDate')['% Rentabilidad'].mean().reset_index()
+
+                # Create a complete date range
+                min_date = df_orders['OpenDate'].min()
+                max_date = df_orders['OpenDate'].max()
+                date_range = pd.date_range(start=min_date, end=max_date)
+                all_dates_df = pd.DataFrame({'OpenDate': date_range.date})
+
+                # Merge to include all dates
+                daily_rentabilidad = pd.merge(all_dates_df, daily_rentabilidad, on='OpenDate', how='left')
+
+                # Fill missing '% Rentabilidad' values
+                daily_rentabilidad['% Rentabilidad'].fillna(method='ffill', inplace=True)
+                daily_rentabilidad['% Rentabilidad'].fillna(0, inplace=True)  # For any remaining NaN at the start
+
+                # Prepare data for plotting
+                dates = daily_rentabilidad['OpenDate'].astype(str).tolist()
+                rentabilidades = daily_rentabilidad['% Rentabilidad'].tolist()
             else:
                 dates = []
-                balances = []
+                rentabilidades = []
+            # ------------------------
+
+
 
             # Calculate Daily Open Orders for Bar Plot
             df['OpenDate'] = df['OpenTime'].dt.date
@@ -484,6 +543,7 @@ def mam_summary():
                            summary_table_side=summary_table_side,
                            initial_balance=initial_balance,
                            dates=json.dumps(dates),
+                           rentabilidades=json.dumps(rentabilidades),
                            balances=json.dumps(balances),
                            open_dates=json.dumps(open_dates),
                            open_orders=json.dumps(open_orders)
