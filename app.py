@@ -1,3 +1,5 @@
+import traceback
+
 from flask import Flask, render_template, request, redirect, url_for, flash
 import pandas as pd
 import os
@@ -241,6 +243,9 @@ def orders():
                 try:
                     df = pd.read_csv(file_path)
 
+                    if 'MagicNumber' not in df.columns:
+                        df['MagicNumber'] = '#N/A'
+
                     # Sort by the first column
                     first_column = df.columns[0]
                     df = df.sort_values(by=first_column)
@@ -266,7 +271,9 @@ def orders():
 # app.py
 @app.route('/mam_summary', methods=['GET', 'POST'])
 def mam_summary():
-    dates, balances, open_dates, open_orders = [], [], [], []
+    dates, balances, open_dates, open_orders, rentabilidades = [], [], [], [], []
+    rentabilidad_last_dates, rentabilidad_last_values = [], []
+    magic_numbers = []
 
     uploaded_files = []
 
@@ -283,16 +290,6 @@ def mam_summary():
 
     selected_file = 'mam-history-orders-5630165.csv'
     initial_balance_input = request.form.get('initial_balance')
-
-    # Validate initial balance
-    # try:
-    #     initial_balance = float(initial_balance_input)
-    #     if initial_balance <= 0:
-    #         flash('Initial balance must be a number greater than 0.')
-    #         initial_balance = 100000.00  # Reset to default if invalid
-    # except (ValueError, TypeError):
-    #     flash('Invalid initial balance. Please enter a valid number greater than 0.')
-    #     initial_balance = 100000.00  # Reset to default if invalid
 
     file_path = os.path.join(app.config['UPLOAD_FOLDER'], selected_file)
     if os.path.exists(file_path):
@@ -481,8 +478,6 @@ def mam_summary():
 
             # Profit over time
             df['% Rentabilidad'] = (df['Rentabilidad']) * 100
-            # Calculate cumulative '% Rentabilidad' over time using 'sell' and 'buy' orders and 'OpenTime'
-            # Filter orders with side 'sell' or 'buy'
             df_orders = df[df['side'].isin(['sell', 'buy'])].copy()
 
             if not df_orders.empty:
@@ -503,10 +498,11 @@ def mam_summary():
 
                 # Fill missing '% Rentabilidad' values
                 daily_rentabilidad['% Rentabilidad'].fillna(method='ffill', inplace=True)
-                daily_rentabilidad['% Rentabilidad'].fillna(0, inplace=True)  # For any remaining NaN at the start
+                daily_rentabilidad['% Rentabilidad'].fillna(0, inplace=True)
 
                 # Prepare data for plotting
                 dates = daily_rentabilidad['OpenDate'].astype(str).tolist()
+
                 rentabilidades = daily_rentabilidad['% Rentabilidad'].tolist()
             else:
                 dates = []
@@ -535,6 +531,20 @@ def mam_summary():
             flash(f'File "{selected_file}" processed successfully. Initial Balance: ${initial_balance:,.2f}')
         except Exception as e:
             flash(f'Error processing file "{selected_file}": {e}')
+            # Assign default values in case of error
+            rentabilidades = []
+            dates = []
+            rentabilidad_last_dates = []
+            rentabilidad_last_values = []
+            print(f'Error: {e}')
+            traceback.print_exc()
+    else:
+        flash(f'File "{selected_file}" does not exist.')
+        # Assign default values
+        rentabilidades = []
+        dates = []
+        rentabilidad_last_dates = []
+        rentabilidad_last_values = []
 
     return render_template('mam_summary.html',
                            uploaded_files=uploaded_files,
@@ -546,8 +556,11 @@ def mam_summary():
                            rentabilidades=json.dumps(rentabilidades),
                            balances=json.dumps(balances),
                            open_dates=json.dumps(open_dates),
-                           open_orders=json.dumps(open_orders)
-                       )
+                           open_orders=json.dumps(open_orders),
+                           rentabilidad_last_dates=json.dumps(rentabilidad_last_dates),
+                           rentabilidad_last_values=json.dumps(rentabilidad_last_values),
+                           magic_numbers=magic_numbers
+                           )
 
 @app.route('/summary', methods=['GET', 'POST'])
 def summary():

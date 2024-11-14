@@ -155,6 +155,14 @@
             <p>No summary data to display for Side and G/P.</p>
         {% endif %}
 
+        <!-- Plot Section: RentabilidadLast Over Time -->
+        {% if rentabilidad_last_dates and rentabilidad_last_values %}
+            <br>
+            <br>
+            <h2 class="mt-5">Rentabilidad Last Over Time</h2>
+            <canvas id="rentabilidadLastChart" width="800" height="400"></canvas>
+        {% endif %}
+
         <!-- Plot Section: % Rentabilidad Over Time -->
         {% if dates and rentabilidades %}
             <br>
