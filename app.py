@@ -268,6 +268,40 @@ def orders():
                            table_data=table_data)
 
 
+@app.route('/mam_orders', methods=['GET', 'POST'])
+def mam_orders():
+    selected_file = 'mam-history-orders-5630165.csv'
+    table_data = None
+
+    if selected_file:
+        file_path = os.path.join(app.config['UPLOAD_FOLDER'], selected_file)
+        if os.path.exists(file_path):
+            try:
+                df = pd.read_csv(file_path)
+
+
+                # Sort by the first column
+                first_column = df.columns[0]
+                df = df.sort_values(by=first_column)
+                df = df.loc[df.OrderType.isin(['Sell', 'Buy'])]
+                if 'Comments' in df.columns:
+                    df.drop(columns=['Comments'], inplace=True)
+
+                table_data = df.to_dict(orient='records')
+                headers = df.columns.tolist()
+                return render_template('mam_orders.html',
+                                       selected_file=selected_file,
+                                       headers=headers,
+                                       table_data=table_data)
+            except Exception as e:
+                flash(f'Error reading file "{selected_file}": {e}')
+        else:
+            flash(f'File "{selected_file}" does not exist.')
+
+    return render_template('mam_orders.html',
+                           selected_file=selected_file,
+                           table_data=table_data)
+
 # app.py
 @app.route('/mam_summary', methods=['GET', 'POST'])
 def mam_summary():
